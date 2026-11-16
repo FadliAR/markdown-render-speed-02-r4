@@ -134,8 +134,15 @@ function leadCols(s) {
 
 // The substring of s that begins at column `target`. A tab that straddles
 // the target is replaced by the spaces it still owes.
-function sliceCols(s, target) {
-  let cols = 0;
+// Remove `cut` columns of leading whitespace from s, where s begins at
+// document column `phase` (tab widths depend on it). When the cut disturbs
+// tab alignment, the remaining leading whitespace is materialized as
+// spaces at its original column widths; otherwise tabs are preserved.
+function sliceCols(s, cut, phase) {
+  if (phase === undefined) phase = 0;
+  if (cut <= 0) return s;
+  const target = phase + cut;
+  let cols = phase;
   let idx = 0;
   while (idx < s.length && cols < target) {
     const c = s[idx];
@@ -145,7 +152,13 @@ function sliceCols(s, target) {
     } else if (c === '\t') {
       const w = 4 - (cols % 4);
       if (cols + w > target) {
-        return ' '.repeat(cols + w - target) + s.slice(idx + 1);
+        let total = cols + w;
+        let k = idx + 1;
+        while (k < s.length && (s[k] === ' ' || s[k] === '\t')) {
+          total += s[k] === ' ' ? 1 : 4 - (total % 4);
+          k++;
+        }
+        return ' '.repeat(total - target) + s.slice(k);
       }
       cols += w;
       idx++;
@@ -153,11 +166,20 @@ function sliceCols(s, target) {
       break;
     }
   }
-  if (idx < s.length && s[idx] === '\t') {
-    // A tab right at the cut boundary: if its width at its original
-    // column differs from a fresh tab's width, express it as spaces.
-    const w = 4 - (cols % 4);
-    if (w !== 4) return ' '.repeat(w) + s.slice(idx + 1);
+  if (cols === target && cut % 4 !== 0) {
+    let total = cols;
+    let k = idx;
+    let hasTab = false;
+    while (k < s.length && (s[k] === ' ' || s[k] === '\t')) {
+      if (s[k] === '\t') {
+        hasTab = true;
+        total += 4 - (total % 4);
+      } else {
+        total += 1;
+      }
+      k++;
+    }
+    if (hasTab) return ' '.repeat(total - target) + s.slice(k);
   }
   return s.slice(idx);
 }
@@ -261,9 +283,10 @@ function tryDef(lines, i, state) {
   const lc = leadCols(first);
   if (lc.cols > 3 || first[lc.idx] !== '[') return null;
 
-  // Work on a window of up to three lines; a definition never spans more.
+  // Work on a window of lines; a definition is short, but a title may
+  // span several lines, so allow a generous window.
   const win = [];
-  for (let k = i; k < lines.length && win.length < 3; k++) win.push(lines[k].s);
+  for (let k = i; k < lines.length && win.length < 10; k++) win.push(lines[k].s);
   const str = win.join('\n');
   let pos = lc.idx;
 
@@ -583,13 +606,9 @@ function matchSetext(s) {
 function matchQuote(s) {
   const lc = leadCols(s);
   if (lc.cols > 3 || s[lc.idx] !== '>') return null;
-  let rest = s.slice(lc.idx + 1);
-  if (rest.startsWith(' ')) {
-    rest = rest.slice(1);
-  } else if (rest.startsWith('\t')) {
-    const colAfter = lc.cols + 1;
-    const w = 4 - (colAfter % 4);
-    rest = ' '.repeat(Math.max(0, w - 1)) + rest.slice(1);
+  const rest = s.slice(lc.idx + 1);
+  if (rest.startsWith(' ') || rest.startsWith('\t')) {
+    return sliceCols(rest, 1, lc.cols + 1);
   }
   return rest;
 }
@@ -646,7 +665,7 @@ function matchMarker(s) {
   return {
     ordered, bullet, delim, number,
     contentCol,
-    content: sliceCols(after, contentCol - markerEndCol),
+    content: sliceCols(after, contentCol - markerEndCol, markerEndCol),
   };
 }
 
@@ -689,7 +708,7 @@ function findTermLine(lines, i, term) {
   return -1;
 }
 
-function tryHtmlBlock(lines, i) {
+function tryHtmlBlock(lines, i, endOfDoc) {
   const kind = htmlBlockKind(lines, i);
   if (!kind) return null;
   const s = lines[i].s;
@@ -714,7 +733,7 @@ function tryHtmlBlock(lines, i) {
     if (end < 0) end = lines.length - 1;
     const text = lines.slice(i, end + 1).map((x) => x.s).join('\n');
     const nxt = lines[end + 1];
-    const reachesEnd = end >= lines.length - 1;
+    const reachesEnd = !!endOfDoc && end >= lines.length - 1;
     return {
       node: {
         type: 'html',
@@ -737,7 +756,7 @@ function tryHtmlBlock(lines, i) {
     }
   }
   return {
-    node: { type: 'html', text: text + (hasMore ? '' : '\n') },
+    node: { type: 'html', text: text + (endOfDoc && !hasMore ? '\n' : '') },
     next: j,
   };
 }
@@ -784,7 +803,7 @@ function startsBlockLine(s) {
   return false;
 }
 
-function lexBlockquote(lines, i, state) {
+function lexBlockquote(lines, i, state, endOfDoc) {
   const inner = [];
   let j = i;
   let lazyOk = false;
@@ -823,7 +842,13 @@ function lexBlockquote(lines, i, state) {
     }
     break;
   }
-  return { node: { type: 'quote', blocks: lexBlocks(inner, state) }, next: j };
+  return {
+    node: {
+      type: 'quote',
+      blocks: lexBlocks(inner, state, !!endOfDoc && j >= lines.length),
+    },
+    next: j,
+  };
 }
 
 function sameListType(a, b) {
@@ -832,12 +857,13 @@ function sameListType(a, b) {
   return a.bullet === b.bullet;
 }
 
-function lexList(lines, i, state) {
+function lexList(lines, i, state, endOfDoc) {
   const first = matchMarker(lines[i].s);
   const items = [];
   let j = i;
   let listDone = false;
   while (j < lines.length && !listDone) {
+    if (isHr(lines[j].s)) break;
     const mk = matchMarker(lines[j].s);
     if (!mk || !sameListType(first, mk)) break;
     const itemLines = [{ s: mk.content, lz: false }];
@@ -852,6 +878,12 @@ function lexList(lines, i, state) {
         let k = j;
         while (k < lines.length && isBlank(lines[k].s)) k++;
         if (k >= lines.length) {
+          j = k;
+          itemDone = true;
+          listDone = true;
+          break;
+        }
+        if (isHr(lines[k].s)) {
           j = k;
           itemDone = true;
           listDone = true;
@@ -937,8 +969,12 @@ function lexList(lines, i, state) {
     }
   });
 
-  const itemObjs = items.map((itemLines) => {
-    const blocks = lexBlocks(itemLines, state);
+  const itemObjs = items.map((itemLines, idx) => {
+    const blocks = lexBlocks(
+      itemLines,
+      state,
+      !!endOfDoc && j >= lines.length && idx === items.length - 1
+    );
     let task = false;
     let checked = false;
     if (blocks.length > 0 && blocks[0].type === 'paragraph') {
@@ -996,6 +1032,20 @@ function interruptsParagraph(lines, j, state) {
   return false;
 }
 
+// Setext heading text assembly: each line loses up to three leading
+// columns and the final line is right-trimmed. (Paragraph text, by
+// contrast, is assembled verbatim.)
+function headingText(buf) {
+  const parts = buf.map((x, idx) => {
+    let s = x.s;
+    const lc = leadCols(s).cols;
+    if (lc > 0) s = sliceCols(s, Math.min(3, lc));
+    if (idx === buf.length - 1) s = s.replace(/[ \t]+$/, '');
+    return s;
+  });
+  return parts.join('\n');
+}
+
 function collectParagraph(lines, i, state) {
   const buf = [lines[i]];
   let j = i + 1;
@@ -1009,8 +1059,7 @@ function collectParagraph(lines, i, state) {
     }
     const su = matchSetext(L.s);
     if (su) {
-      const text = buf.map((x) => x.s).join('\n');
-      return { node: { type: 'heading', level: su, text }, next: j + 1 };
+      return { node: { type: 'heading', level: su, text: headingText(buf) }, next: j + 1 };
     }
     if (interruptsParagraph(lines, j, state)) break;
     buf.push(L);
@@ -1030,7 +1079,9 @@ function lexIndentedCode(lines, i) {
       while (k < lines.length && isBlank(lines[k].s)) k++;
       if (k < lines.length && leadCols(lines[k].s).cols >= 4) {
         while (j < k) {
-          buf.push('');
+          buf.push(
+            leadCols(lines[j].s).cols >= 4 ? sliceCols(lines[j].s, 4) : ''
+          );
           j++;
         }
         continue;
@@ -1068,7 +1119,7 @@ function tryTable(lines, i, state) {
 
 // Lex a list of container-stripped lines into block nodes, registering every
 // link reference definition (including nested ones) into state.defs.
-function lexBlocks(lines, state) {
+function lexBlocks(lines, state, endOfDoc) {
   const blocks = [];
   let i = 0;
   while (i < lines.length) {
@@ -1100,18 +1151,18 @@ function lexBlocks(lines, state) {
       continue;
     }
     if (matchQuote(L.s) !== null) {
-      r = lexBlockquote(lines, i, state);
+      r = lexBlockquote(lines, i, state, endOfDoc);
       blocks.push(r.node);
       i = r.next;
       continue;
     }
     if (matchMarker(L.s)) {
-      r = lexList(lines, i, state);
+      r = lexList(lines, i, state, endOfDoc);
       blocks.push(r.node);
       i = r.next;
       continue;
     }
-    if ((r = tryHtmlBlock(lines, i))) {
+    if ((r = tryHtmlBlock(lines, i, endOfDoc))) {
       blocks.push(r.node);
       i = r.next;
       continue;
@@ -1606,7 +1657,7 @@ function renderInline(text, state) {
 
     if (c === '&') {
       const rest = text.slice(i);
-      const nm = /^&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));/.exec(rest);
+      const nm = /^&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));/.exec(rest);
       if (nm) {
         buf += decodeCodePoint(
           nm[1] !== undefined ? parseInt(nm[1], 16) : parseInt(nm[2], 10)
@@ -1614,7 +1665,7 @@ function renderInline(text, state) {
         i += nm[0].length;
         continue;
       }
-      const em = /^&[a-zA-Z][a-zA-Z0-9]{1,31};/.exec(rest);
+      const em = /^&[a-zA-Z][a-zA-Z0-9]*;/.exec(rest);
       if (em) {
         flush();
         nodes.push({ k: 'raw', s: em[0] });
@@ -1892,7 +1943,7 @@ export function parse(src) {
   const rawLines = src.split('\n');
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
   const lines = rawLines.map((s) => ({ s, lz: false }));
-  const blocks = lexBlocks(lines, state);
+  const blocks = lexBlocks(lines, state, true);
   return renderBlocks(blocks, state, false);
 }
 
