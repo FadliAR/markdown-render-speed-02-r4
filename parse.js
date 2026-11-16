@@ -989,12 +989,18 @@ function lexList(lines, i, state, endOfDoc) {
         }
         if (inFence || leadCols(lines[k].s).cols >= mk.contentCol) {
           // Inside a fence in an item, a blank run that runs straight
-          // into the fence close loses one blank line (cm-318).
+          // into the fence close loses one blank line (cm-318). The
+          // close is tested in item-relative coordinates, like in the
+          // fence branch below (doc-31's close sits at column 7 raw).
           const runLen = k - j;
-          const keep =
-            inFence && k < lines.length && isFenceClose(lines[k].s, inFence)
-              ? runLen - 1
-              : runLen;
+          let keep = runLen;
+          if (inFence && k < lines.length) {
+            const kSliced =
+              leadCols(lines[k].s).cols >= mk.contentCol
+                ? sliceCols(lines[k].s, mk.contentCol)
+                : lines[k].s;
+            if (isFenceClose(kSliced, inFence)) keep = runLen - 1;
+          }
           for (let n = 0; n < runLen; n++) {
             if (n < keep) itemLines.push({ s: '', lz: false });
             j++;
