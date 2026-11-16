@@ -987,7 +987,7 @@ function lexList(lines, i, state, endOfDoc) {
           if (leadCols(lines[k].s).cols < listBaseCols) listDone = true;
           break;
         }
-        if (inFence || leadCols(lines[k].s).cols >= mk.contentCol || tryFenceStart(lines[k].s)) {
+        if (inFence || leadCols(lines[k].s).cols >= mk.contentCol) {
           // Inside a fence in an item, a blank run that runs straight
           // into the fence close loses one blank line (cm-318).
           const runLen = k - j;
@@ -1072,7 +1072,9 @@ function lexList(lines, i, state, endOfDoc) {
       if (tryFenceStart(ls)) {
         itemLines.push({ s: ls, lz: false });
         inFence = tryFenceStart(ls);
-        fenceStartIdx = itemLines.length - 1;
+        // Opened from a line dedented below the content column: not
+        // item content, so the unfed-fence rule must not fire for it.
+        fenceStartIdx = -1;
         j++;
         continue;
       }
