@@ -1070,9 +1070,6 @@ function lexList(lines, i, state, endOfDoc) {
       const nm = matchMarker(ls);
       if (nm && sameListType(first, nm)) {
         itemDone = true;
-        // A same-type marker dedented below this list's own base
-        // indent belongs to an ancestor list: this list ends too.
-        if (leadCols(ls).cols < listBaseCols) listDone = true;
         break;
       }
       if (tryFenceStart(ls)) {
