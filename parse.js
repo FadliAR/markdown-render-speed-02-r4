@@ -584,6 +584,9 @@ function tryFenceStart(s) {
   if (lc.cols > 3) return null;
   const m = /^(`{3,}|~{3,})/.exec(s.slice(lc.idx));
   if (!m) return null;
+  // The info string of a backtick fence may not contain backticks:
+  // ```inner backticks``` is paragraph text (a code span), not a fence.
+  if (m[1][0] === '`' && s.slice(lc.idx + m[1].length).indexOf('`') >= 0) return null;
   return { ch: m[1][0], len: m[1].length };
 }
 
