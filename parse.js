@@ -1029,6 +1029,18 @@ function lexList(lines, i, state, endOfDoc) {
         lc >= mk.contentCol ||
         (lc >= 2 && endsInParagraph(itemLines) && !startsBlockLine(ls))
       ) {
+        // A marker line that does not reach the item's content column
+        // can neither continue this list nor start a nested one; with
+        // a paragraph open it is paragraph text (cm-312: `- e` at
+        // column 4 under an item whose content column is 5).
+        if (lc < mk.contentCol && lc >= 2) {
+          const stripped = ls.replace(/^[ \t]+/, '');
+          if (matchMarker(stripped)) {
+            itemLines.push({ s: stripped, lz: true });
+            j++;
+            continue;
+          }
+        }
         const sliced = sliceCols(ls, mk.contentCol);
         itemLines.push({ s: sliced, lz: false });
         const f = tryFenceStart(sliced);
