@@ -708,12 +708,18 @@ function tryHtmlBlock(lines, i) {
     if (end < 0) end = lines.length - 1;
     const text = lines.slice(i, end + 1).map((x) => x.s).join('\n');
     const nxt = lines[end + 1];
+    const reachesEnd = end >= lines.length - 1;
     return {
-      node: { type: 'html', text: text + (nxt && nxt.s !== '' ? '\n' : '') },
+      node: {
+        type: 'html',
+        text: text + (reachesEnd || (nxt && nxt.s !== '') ? '\n' : ''),
+      },
       next: end + 1,
     };
   }
-  // Ends at the first blank line (not included).
+  // Ends at the first blank line (not included). The block's text gains a
+  // trailing newline only when the block effectively ends the document
+  // (nothing but blank lines follows it).
   let j = i;
   while (j < lines.length && !isBlank(lines[j].s)) j++;
   const text = lines.slice(i, j).map((x) => x.s).join('\n');
@@ -725,7 +731,7 @@ function tryHtmlBlock(lines, i) {
     }
   }
   return {
-    node: { type: 'html', text: text + (hasMore ? '\n' : '') },
+    node: { type: 'html', text: text + (hasMore ? '' : '\n') },
     next: j,
   };
 }
@@ -741,16 +747,34 @@ function htmlInterrupts(lines, j) {
 // last non-blank line is plain paragraph text.
 function endsInParagraph(lines) {
   for (let k = lines.length - 1; k >= 0; k--) {
-    const s = lines[k].s;
+    let s = lines[k].s;
+    if (isBlank(s)) return false;
+    // See through nested blockquote markers: a paragraph may be open
+    // inside one or more quotes at the tail of the line.
+    for (;;) {
+      const q = matchQuote(s);
+      if (q === null) break;
+      s = q;
+    }
     if (isBlank(s)) return false;
     if (tryFenceStart(s)) return false;
     if (tryAtx(s)) return false;
     if (isHr(s)) return false;
-    if (matchQuote(s)) return false;
     if (matchMarker(s)) return false;
     if (leadCols(s).cols >= 4) return false;
     return true;
   }
+  return false;
+}
+
+// A line that itself opens a block can never be a lazy continuation line.
+function startsBlockLine(s) {
+  if (tryFenceStart(s)) return true;
+  if (tryAtx(s)) return true;
+  if (isHr(s)) return true;
+  if (matchQuote(s) !== null) return true;
+  if (matchMarker(s)) return true;
+  if (htmlBlockKind([{ s, lz: false }], 0) !== null) return true;
   return false;
 }
 
@@ -770,7 +794,7 @@ function lexBlockquote(lines, i, state) {
     if (isBlank(L.s)) {
       let k = j;
       while (k < lines.length && isBlank(lines[k].s)) k++;
-      if (k < lines.length && matchQuote(lines[k].s)) {
+      if (k < lines.length && matchQuote(lines[k].s) !== null) {
         while (j < k) {
           inner.push({ s: '', lz: false });
           j++;
@@ -779,7 +803,7 @@ function lexBlockquote(lines, i, state) {
       }
       break;
     }
-    if (lazyOk) {
+    if (lazyOk && !startsBlockLine(L.s)) {
       inner.push({ s: L.s, lz: true });
       j++;
       continue;
@@ -941,9 +965,10 @@ function interruptsParagraph(lines, j, state) {
   if (tryFenceStart(s)) return true;
   if (tryAtx(s)) return true;
   if (isHr(s)) return true;
-  if (matchQuote(s)) return true;
+  if (matchQuote(s) !== null) return true;
   const mk = matchMarker(s);
   if (mk) {
+    if (isBlank(mk.content)) return false;
     if (!mk.ordered) return true;
     if (mk.number === 1) return true;
     return countItemsAhead(lines, j, mk) >= 2;
@@ -1056,7 +1081,7 @@ function lexBlocks(lines, state) {
       i++;
       continue;
     }
-    if (matchQuote(L.s)) {
+    if (matchQuote(L.s) !== null) {
       r = lexBlockquote(lines, i, state);
       blocks.push(r.node);
       i = r.next;
@@ -1852,7 +1877,9 @@ export function parse(src) {
   if (typeof src !== 'string') src = src == null ? '' : String(src);
   src = src.replace(/\r\n|\r/g, '\n').replace(/\0/g, '\ufffd');
   const state = { defs: new Map() };
-  const lines = src.split('\n').map((s) => ({ s, lz: false }));
+  const rawLines = src.split('\n');
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+  const lines = rawLines.map((s) => ({ s, lz: false }));
   const blocks = lexBlocks(lines, state);
   return renderBlocks(blocks, state, false);
 }
