@@ -1648,6 +1648,21 @@ function renderNodes(nodes) {
   return out;
 }
 
+// Bare autolinks (flagged `auto`) that end up inside a successfully formed
+// link's text are flattened back to plain text: the reference renderer does
+// not linkify inside link text, but it does linkify the same text when the
+// enclosing bracket turns out not to be a link.
+function flattenAutos(nodes) {
+  for (let q = 0; q < nodes.length; q++) {
+    const nd = nodes[q];
+    if (nd.k === 'link' && nd.auto) {
+      nodes[q] = { k: 'text', s: plainText(nd.kids) };
+    } else if (nd.kids) {
+      flattenAutos(nd.kids);
+    }
+  }
+}
+
 function renderInline(text, state) {
   const nodes = [];
   const delims = [];
@@ -1789,6 +1804,7 @@ function renderInline(text, state) {
     if (br.img) {
       nodes.push({ k: 'img', href, title, kids });
     } else {
+      flattenAutos(kids);
       nodes.push({ k: 'link', href, title, kids });
       for (const b of brackets) if (!b.img) b.active = false;
     }
@@ -2019,7 +2035,7 @@ function renderInline(text, state) {
       continue;
     }
 
-    if (atBoundary() && brackets.length === 0) {
+    if (atBoundary()) {
       let m = null;
       if (c === 'w') m = matchWww(text, i);
       if (!m && (c === 'h' || c === 'H' || c === 'f' || c === 'F')) {
@@ -2029,6 +2045,25 @@ function renderInline(text, state) {
         m = matchMailtoXmpp(text, i);
       }
       if (!m && /[a-zA-Z0-9]/.test(c)) m = matchEmail(text, i);
+      if (m && brackets.length > 0) {
+        // An autolink match must not run past the ']' that closes the
+        // bracket we are inside: the reference renderer's link token
+        // consumes the whole bracket span before linkification is tried.
+        const close = text.indexOf(']', i);
+        if (close >= 0 && close < m.end) {
+          const cut = trimUrl(text.slice(i, close));
+          if (
+            cut.length > 4 &&
+            (cut.startsWith('www.')
+              ? cut.indexOf('.', 4) > 4
+              : /:\/\/[^\s]/.test(cut))
+          ) {
+            m = { url: cut, end: i + cut.length, email: m.email };
+          } else {
+            m = null;
+          }
+        }
+      }
       if (m) {
         flush();
         const href = m.email
@@ -2038,6 +2073,7 @@ function renderInline(text, state) {
             : m.url;
         nodes.push({
           k: 'link',
+          auto: true,
           href,
           title: null,
           kids: [{ k: 'text', s: m.url }],
