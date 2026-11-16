@@ -914,6 +914,7 @@ function sameListType(a, b) {
 
 function lexList(lines, i, state, endOfDoc) {
   const first = matchMarker(lines[i].s);
+  const listBaseCols = leadCols(lines[i].s).cols;
   const items = [];
   let j = i;
   let listDone = false;
@@ -950,6 +951,7 @@ function lexList(lines, i, state, endOfDoc) {
             }
             blankBetween = true;
             itemDone = true;
+            if (leadCols(lines[k].s).cols < listBaseCols) listDone = true;
             break;
           }
           itemDone = true;
@@ -979,6 +981,7 @@ function lexList(lines, i, state, endOfDoc) {
           }
           blankBetween = true;
           itemDone = true;
+          if (leadCols(lines[k].s).cols < listBaseCols) listDone = true;
           break;
         }
         if (inFence || leadCols(lines[k].s).cols >= mk.contentCol || tryFenceStart(lines[k].s)) {
@@ -995,22 +998,26 @@ function lexList(lines, i, state, endOfDoc) {
         break;
       }
       if (inFence) {
+        const sliced =
+          leadCols(ls).cols >= mk.contentCol ? sliceCols(ls, mk.contentCol) : ls;
         // A fence that has received no content lines yet does not hold
         // the item open against a line dedented to the item's own level:
         // the item ends and the fence stays unclosed (empty).
         if (
           fenceStartIdx >= 0 &&
           itemLines.length - 1 <= fenceStartIdx &&
-          !isFenceClose(ls, inFence) &&
+          !isFenceClose(sliced, inFence) &&
           leadCols(ls).cols <= itemBaseCols
         ) {
           itemDone = true;
           break;
         }
-        const sliced =
-          leadCols(ls).cols >= mk.contentCol ? sliceCols(ls, mk.contentCol) : ls;
         itemLines.push({ s: sliced, lz: false });
-        if (isFenceClose(ls, inFence)) {
+        // The close is tested in item-relative coordinates: a fence
+        // nested deeper in the item has its close indented past the
+        // 3-column limit in raw coordinates, which used to leave the
+        // fence "open" here and swallow the item's following lines.
+        if (isFenceClose(sliced, inFence)) {
           inFence = null;
           fenceStartIdx = -1;
         }
@@ -1035,6 +1042,9 @@ function lexList(lines, i, state, endOfDoc) {
       const nm = matchMarker(ls);
       if (nm && sameListType(first, nm)) {
         itemDone = true;
+        // A same-type marker dedented below this list's own base
+        // indent belongs to an ancestor list: this list ends too.
+        if (leadCols(ls).cols < listBaseCols) listDone = true;
         break;
       }
       if (tryFenceStart(ls)) {
