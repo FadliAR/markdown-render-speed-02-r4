@@ -251,6 +251,9 @@ function scanTag(s, i) {
 // instruction, declaration, CDATA, or a tag). End index or -1.
 function scanInlineHtml(s, i) {
   if (s.startsWith('<!--', i)) {
+    // Abruptly closed comments are complete on their own.
+    if (s[i + 4] === '>') return i + 5;
+    if (s[i + 4] === '-' && s[i + 5] === '>') return i + 6;
     const e = s.indexOf('-->', i + 4);
     return e < 0 ? -1 : e + 3;
   }
@@ -1692,6 +1695,8 @@ function renderInline(text, state) {
         flush();
         nodes.push({ k: 'br' });
         i += 2;
+        // Leading whitespace of the next line is not significant.
+        while (text[i] === ' ' || text[i] === '\t') i++;
         continue;
       }
       if (nx !== undefined && ASCII_PUNCT.indexOf(nx) >= 0) {
@@ -1889,10 +1894,13 @@ function renderInline(text, state) {
         buf = buf.replace(/ +$/, '');
         flush();
         nodes.push({ k: 'br' });
+        i++;
+        // Leading whitespace of the next line is not significant.
+        while (text[i] === ' ' || text[i] === '\t') i++;
       } else {
         buf += '\n';
+        i++;
       }
-      i++;
       continue;
     }
 
