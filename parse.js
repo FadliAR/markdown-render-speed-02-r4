@@ -804,12 +804,20 @@ function endsInParagraph(lines) {
   for (let k = lines.length - 1; k >= 0; k--) {
     let s = lines[k].s;
     if (isBlank(s)) return false;
-    // See through nested blockquote markers: a paragraph may be open
-    // inside one or more quotes at the tail of the line.
+    // See through nested blockquote and list markers: a paragraph may
+    // be open inside containers at the tail of the line.
     for (;;) {
       const q = matchQuote(s);
-      if (q === null) break;
-      s = q;
+      if (q !== null) {
+        s = q;
+        continue;
+      }
+      const mk = matchMarker(s);
+      if (mk && !isBlank(mk.content)) {
+        s = mk.content;
+        continue;
+      }
+      break;
     }
     if (isBlank(s)) return false;
     if (tryFenceStart(s)) return false;
@@ -880,6 +888,7 @@ function lexList(lines, i, state, endOfDoc) {
   const items = [];
   let j = i;
   let listDone = false;
+  let blankBetween = false;
   while (j < lines.length && !listDone) {
     if (isHr(lines[j].s)) break;
     const mk = matchMarker(lines[j].s);
@@ -892,6 +901,12 @@ function lexList(lines, i, state, endOfDoc) {
       const L = lines[j];
       const ls = L.s;
       if (isBlank(ls)) {
+        // An item with no content yet is not held open by a blank line.
+        if (itemLines.every((x) => isBlank(x.s))) {
+          itemDone = true;
+          listDone = true;
+          break;
+        }
         // Decide from the next non-blank line.
         let k = j;
         while (k < lines.length && isBlank(lines[k].s)) k++;
@@ -913,6 +928,7 @@ function lexList(lines, i, state, endOfDoc) {
             itemLines.push({ s: '', lz: false });
             j++;
           }
+          blankBetween = true;
           itemDone = true;
           break;
         }
@@ -923,7 +939,8 @@ function lexList(lines, i, state, endOfDoc) {
           }
           continue;
         }
-        j = k;
+        // The item and the list end here; the blank lines are left
+        // unconsumed so the enclosing level can see the separation.
         itemDone = true;
         listDone = true;
         break;
@@ -970,29 +987,18 @@ function lexList(lines, i, state, endOfDoc) {
     items.push(itemLines);
   }
 
-  // Loose when a blank line sits between two blocks of one item or between
-  // two items (trailing blanks of the last item do not count).
+  // Loose when some item's own blocks are separated by a blank line at
+  // the item's own level (tracked by the block lexer via `sep`).
   let loose = false;
-  items.forEach((itemLines, idx) => {
-    let seenContent = false;
-    for (let k = 0; k < itemLines.length; k++) {
-      if (isBlank(itemLines[k].s)) {
-        if (seenContent) {
-          const more = itemLines.slice(k + 1).some((x) => !isBlank(x.s));
-          if (more || idx < items.length - 1) loose = true;
-        }
-      } else {
-        seenContent = true;
-      }
-    }
-  });
-
   const itemObjs = items.map((itemLines, idx) => {
+    const sep = { separated: false };
     const blocks = lexBlocks(
       itemLines,
       state,
-      !!endOfDoc && j >= lines.length && idx === items.length - 1
+      !!endOfDoc && j >= lines.length && idx === items.length - 1,
+      sep
     );
+    if (sep.separated || blankBetween) loose = true;
     let task = false;
     let checked = false;
     if (blocks.length > 0 && blocks[0].type === 'paragraph') {
@@ -1130,7 +1136,15 @@ function tryTable(lines, i, state) {
   if (!ta) return null;
   const rows = [];
   let j = i + 2;
-  while (j < lines.length && !isBlank(lines[j].s)) {
+  while (
+    j < lines.length &&
+    !isBlank(lines[j].s) &&
+    matchQuote(lines[j].s) === null &&
+    !tryFenceStart(lines[j].s) &&
+    !tryAtx(lines[j].s) &&
+    !isHr(lines[j].s) &&
+    htmlBlockKind(lines, j) === null
+  ) {
     const cells = splitRow(lines[j].s);
     while (cells.length < ta.headerCells.length) cells.push('');
     rows.push(cells.slice(0, ta.headerCells.length));
@@ -1144,51 +1158,58 @@ function tryTable(lines, i, state) {
 
 // Lex a list of container-stripped lines into block nodes, registering every
 // link reference definition (including nested ones) into state.defs.
-function lexBlocks(lines, state, endOfDoc) {
+function lexBlocks(lines, state, endOfDoc, sep) {
   const blocks = [];
   let i = 0;
+  let pendingBlank = false;
+  const push = (node) => {
+    if (sep && pendingBlank && blocks.length > 0) sep.separated = true;
+    pendingBlank = false;
+    blocks.push(node);
+  };
   while (i < lines.length) {
     const L = lines[i];
     if (isBlank(L.s)) {
+      if (blocks.length > 0) pendingBlank = true;
       i++;
       continue;
     }
     if (L.lz) {
       const r = collectParagraph(lines, i, state);
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
     let r;
     if ((r = tryFence(lines, i))) {
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
     if ((r = tryAtx(L.s))) {
-      blocks.push(r);
+      push(r);
       i++;
       continue;
     }
     if (isHr(L.s)) {
-      blocks.push({ type: 'hr' });
+      push({ type: 'hr' });
       i++;
       continue;
     }
     if (matchQuote(L.s) !== null) {
       r = lexBlockquote(lines, i, state, endOfDoc);
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
     if (matchMarker(L.s)) {
       r = lexList(lines, i, state, endOfDoc);
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
     if ((r = tryHtmlBlock(lines, i, endOfDoc))) {
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
@@ -1197,7 +1218,7 @@ function lexBlocks(lines, state, endOfDoc) {
         const sub = [{ s: r.para, lz: false }];
         for (let k = r.paraLine + 1; k < lines.length; k++) sub.push(lines[k]);
         const pr = collectParagraph(sub, 0, state);
-        blocks.push(pr.node);
+        push(pr.node);
         i = r.paraLine + pr.next;
         continue;
       }
@@ -1205,18 +1226,18 @@ function lexBlocks(lines, state, endOfDoc) {
       continue;
     }
     if ((r = tryTable(lines, i, state))) {
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
     if (leadCols(L.s).cols >= 4) {
       r = lexIndentedCode(lines, i);
-      blocks.push(r.node);
+      push(r.node);
       i = r.next;
       continue;
     }
     r = collectParagraph(lines, i, state);
-    blocks.push(r.node);
+    push(r.node);
     i = r.next;
   }
   return blocks;
