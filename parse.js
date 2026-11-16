@@ -1129,11 +1129,16 @@ function lexList(lines, i, state, endOfDoc) {
 function countItemsAhead(lines, j, mk) {
   const baseCols = leadCols(lines[j].s).cols;
   for (let k = j + 1; k < lines.length; k++) {
-    if (isBlank(lines[k].s)) return 1;
+    // Blank lines and indented item content do not end the scan: an
+    // item may itself contain blank-separated blocks before the next
+    // item of the same list appears (doc-10's `0)` list).
+    if (isBlank(lines[k].s)) continue;
+    const cols = leadCols(lines[k].s).cols;
     const m2 = matchMarker(lines[k].s);
-    if (m2 && m2.ordered && m2.delim === mk.delim && leadCols(lines[k].s).cols === baseCols) {
+    if (m2 && m2.ordered && m2.delim === mk.delim && cols === baseCols) {
       return 2;
     }
+    if (cols <= baseCols) return 1;
   }
   return 1;
 }
