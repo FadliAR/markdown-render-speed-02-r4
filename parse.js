@@ -922,9 +922,11 @@ function lexList(lines, i, state, endOfDoc) {
     if (isHr(lines[j].s)) break;
     const mk = matchMarker(lines[j].s);
     if (!mk || !sameListType(first, mk)) break;
+    const itemBaseCols = leadCols(lines[j].s).cols;
     const itemLines = [{ s: mk.content, lz: false }];
     j++;
     let inFence = tryFenceStart(mk.content);
+    let fenceStartIdx = inFence ? 0 : -1;
     let itemDone = false;
     while (j < lines.length && !itemDone) {
       const L = lines[j];
@@ -993,10 +995,25 @@ function lexList(lines, i, state, endOfDoc) {
         break;
       }
       if (inFence) {
+        // A fence that has received no content lines yet does not hold
+        // the item open against a line dedented to the item's own level:
+        // the item ends and the fence stays unclosed (empty).
+        if (
+          fenceStartIdx >= 0 &&
+          itemLines.length - 1 <= fenceStartIdx &&
+          !isFenceClose(ls, inFence) &&
+          leadCols(ls).cols <= itemBaseCols
+        ) {
+          itemDone = true;
+          break;
+        }
         const sliced =
           leadCols(ls).cols >= mk.contentCol ? sliceCols(ls, mk.contentCol) : ls;
         itemLines.push({ s: sliced, lz: false });
-        if (isFenceClose(ls, inFence)) inFence = null;
+        if (isFenceClose(ls, inFence)) {
+          inFence = null;
+          fenceStartIdx = -1;
+        }
         j++;
         continue;
       }
@@ -1008,7 +1025,10 @@ function lexList(lines, i, state, endOfDoc) {
         const sliced = sliceCols(ls, mk.contentCol);
         itemLines.push({ s: sliced, lz: false });
         const f = tryFenceStart(sliced);
-        if (f) inFence = f;
+        if (f) {
+          inFence = f;
+          fenceStartIdx = itemLines.length - 1;
+        }
         j++;
         continue;
       }
@@ -1020,6 +1040,7 @@ function lexList(lines, i, state, endOfDoc) {
       if (tryFenceStart(ls)) {
         itemLines.push({ s: ls, lz: false });
         inFence = tryFenceStart(ls);
+        fenceStartIdx = itemLines.length - 1;
         j++;
         continue;
       }
