@@ -1432,7 +1432,29 @@ function matchScheme(text, i) {
 function matchEmail(text, i) {
   const m = EMAIL_RE.exec(text.slice(i));
   if (!m) return null;
+  // An address immediately followed by - or _ is not a link at all: the
+  // character would belong to the address but cannot end it.
+  const nx = text[i + m[0].length];
+  if (nx === '-' || nx === '_') return null;
   return { url: m[0], end: i + m[0].length, email: true };
+}
+
+// GFM: mailto: and xmpp: scheme-prefixed email autolinks. The whole
+// scheme + address forms one link; xmpp may carry one /resource segment.
+function matchMailtoXmpp(text, i) {
+  const sm = /^(mailto|xmpp):/i.exec(text.slice(i));
+  if (!sm) return null;
+  const rest = i + sm[0].length;
+  const em = EMAIL_RE.exec(text.slice(rest));
+  if (!em) return null;
+  let end = rest + em[0].length;
+  const nx = text[end];
+  if (nx === '-' || nx === '_') return null;
+  if (sm[1].toLowerCase() === 'xmpp' && text[end] === '/') {
+    const rm = /^\/[^\s<>/]+/.exec(text.slice(end));
+    if (rm) end += rm[0].length;
+  }
+  return { url: text.slice(i, end), end, email: false };
 }
 
 // The plain-text content of a node list (used for image alt text).
@@ -1909,6 +1931,9 @@ function renderInline(text, state) {
       if (c === 'w') m = matchWww(text, i);
       if (!m && (c === 'h' || c === 'H' || c === 'f' || c === 'F')) {
         m = matchScheme(text, i);
+      }
+      if (!m && (c === 'm' || c === 'M' || c === 'x' || c === 'X')) {
+        m = matchMailtoXmpp(text, i);
       }
       if (!m && /[a-zA-Z0-9]/.test(c)) m = matchEmail(text, i);
       if (m) {
