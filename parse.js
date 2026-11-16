@@ -290,10 +290,10 @@ function tryDef(lines, i, state) {
   const str = win.join('\n');
   let pos = lc.idx;
 
-  // Label: no unescaped '[' inside, must end on the same line.
+  // Label: no unescaped '[' inside; may span lines but never a blank line.
   let j = pos + 1;
   let labelEnd = -1;
-  while (j < str.length && str[j] !== '\n') {
+  while (j < str.length) {
     const ch = str[j];
     if (ch === '\\') {
       j += 2;
@@ -303,6 +303,11 @@ function tryDef(lines, i, state) {
     if (ch === ']') {
       labelEnd = j;
       break;
+    }
+    if (ch === '\n') {
+      const nl = str.indexOf('\n', j + 1);
+      const nextLine = nl < 0 ? str.slice(j + 1) : str.slice(j + 1, nl);
+      if (nextLine.trim() === '') return null;
     }
     j++;
   }
@@ -398,44 +403,69 @@ function tryDef(lines, i, state) {
     return { next: i + k, para: rem, paraLine: i + k };
   };
 
-  // Optional title, possibly on the following line.
-  const beforeWs = pos;
-  if (!skipWs()) {
-    // Nothing but whitespace follows the destination: clean definition.
-    register(null);
-    return { next: i + lineOf(pos) + (pos >= str.length ? 0 : 1) };
-  }
-  void beforeWs;
-  if (pos >= str.length) {
-    register(null);
-    return { next: i + lineOf(pos) + 1 };
-  }
-  const q = str[pos];
-  if (q !== '"' && q !== "'" && q !== '(') return fallback(destEndPos);
-  const close = q === '(' ? ')' : q;
-  let k = pos + 1;
-  let ok = false;
-  while (k < str.length) {
-    const ch = str[k];
-    if (ch === '\\') {
-      k += 2;
-      continue;
+  // Scan a title starting at p; returns { title, end } or null. A title
+  // may span lines but never crosses a blank line.
+  const scanTitle = (p) => {
+    const q = str[p];
+    if (q !== '"' && q !== "'" && q !== '(') return null;
+    const close = q === '(' ? ')' : q;
+    let k = p + 1;
+    while (k < str.length) {
+      const ch = str[k];
+      if (ch === '\\') {
+        k += 2;
+        continue;
+      }
+      if (ch === close) {
+        return { title: unescapeStr(str.slice(p + 1, k)), end: k + 1 };
+      }
+      if (q === '(' && ch === '(') return null;
+      if (ch === '\n') {
+        const nl = str.indexOf('\n', k + 1);
+        const nextLine = nl < 0 ? str.slice(k + 1) : str.slice(k + 1, nl);
+        if (nextLine.trim() === '') return null;
+      }
+      k++;
     }
-    if (ch === close) {
-      ok = true;
-      break;
-    }
-    if (q === '(' && ch === '(') break;
-    if (ch === '\n' && str[k + 1] === '\n') break;
-    k++;
+    return null;
+  };
+  // Index just past trailing spaces/tabs when the line ends there, else -1.
+  const atLineEnd = (p) => {
+    while (str[p] === ' ' || str[p] === '\t') p++;
+    return p >= str.length || str[p] === '\n' ? p : -1;
+  };
+
+  // What follows the destination on its own line decides validity: a
+  // title there must be whitespace-separated and complete, with nothing
+  // after it; anything else invalidates the whole definition.
+  let p = destEndPos;
+  while (str[p] === ' ' || str[p] === '\t') p++;
+  if (p < str.length && str[p] !== '\n') {
+    if (p === destEndPos) return null;
+    const t = scanTitle(p);
+    if (!t) return null;
+    const e = atLineEnd(t.end);
+    if (e < 0) return null;
+    register(t.title);
+    return { next: i + lineOf(e) + 1 };
   }
-  if (!ok) return fallback(pos);
-  const title = unescapeStr(str.slice(pos + 1, k));
-  pos = k + 1;
-  while (str[pos] === ' ' || str[pos] === '\t') pos++;
-  if (pos < str.length && str[pos] !== '\n') return fallback(pos);
-  register(title);
-  return { next: i + lineOf(pos) + 1 };
+  // The destination line ends cleanly. A complete title alone on the
+  // next line is adopted; anything else leaves a title-less definition
+  // and the next line is parsed as its own content.
+  if (p < str.length && str[p] === '\n' && p + 1 < str.length) {
+    let q0 = p + 1;
+    while (str[q0] === ' ' || str[q0] === '\t') q0++;
+    const t = scanTitle(q0);
+    if (t) {
+      const e = atLineEnd(t.end);
+      if (e >= 0) {
+        register(t.title);
+        return { next: i + lineOf(e) + 1 };
+      }
+    }
+  }
+  register(null);
+  return { next: i + destLine + 1 };
 }
 
 // ---------------------------------------------------------------------------
@@ -822,21 +852,9 @@ function lexBlockquote(lines, i, state, endOfDoc) {
       lazyOk = fence ? false : endsInParagraph(inner);
       continue;
     }
-    if (isBlank(L.s)) {
-      let k = j;
-      while (k < lines.length && isBlank(lines[k].s)) k++;
-      const qc = k < lines.length ? matchQuote(lines[k].s) : null;
-      if (qc !== null && !tryFenceStart(qc)) {
-        while (j < k) {
-          inner.push({ s: '', lz: false });
-          j++;
-        }
-        continue;
-      }
-      break;
-    }
+    if (isBlank(L.s)) break;
     if (lazyOk && !startsBlockLine(L.s)) {
-      inner.push({ s: L.s, lz: true });
+      inner.push({ s: L.s.replace(/^[ \t]+/, ''), lz: true });
       j++;
       continue;
     }
@@ -942,7 +960,7 @@ function lexList(lines, i, state, endOfDoc) {
         continue;
       }
       if (endsInParagraph(itemLines) && !startsBlockLine(ls)) {
-        itemLines.push({ s: ls, lz: true });
+        itemLines.push({ s: ls.replace(/^[ \t]+/, ''), lz: true });
         j++;
         continue;
       }
@@ -1051,7 +1069,14 @@ function collectParagraph(lines, i, state) {
   let j = i + 1;
   while (j < lines.length) {
     const L = lines[j];
-    if (isBlank(L.s)) break;
+    if (isBlank(L.s)) {
+      // A whitespace-only final line still belongs to the paragraph.
+      if (L.s.length > 0 && j === lines.length - 1) {
+        buf.push(L);
+        j++;
+      }
+      break;
+    }
     if (L.lz) {
       buf.push(L);
       j++;
