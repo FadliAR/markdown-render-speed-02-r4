@@ -50,11 +50,15 @@ function cleanUrl(href) {
 
 const ASCII_PUNCT = '!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
 
+const UNICODE_PUNCT_RE = /[\p{P}\p{S}]/u;
+
 function isPunctChar(ch) {
   if (ch === undefined || ch === '') return false;
   const c = ch.charCodeAt(0);
   if (c < 128) return ASCII_PUNCT.indexOf(ch) >= 0;
-  return /[\u2000-\u206f\u2e00-\u2e7f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/.test(ch);
+  // CommonMark punctuation = Unicode categories P* and S* (so currency
+  // symbols like £ and € count, exactly as ASCII $ does).
+  return UNICODE_PUNCT_RE.test(ch);
 }
 
 function isSpaceChar(ch) {
@@ -270,7 +274,20 @@ function scanInlineHtml(s, i) {
 // ---------------------------------------------------------------------------
 
 function normalizeLabel(label) {
-  return label.replace(/\s+/g, ' ').trim().toLowerCase();
+  // Unicode full case folding: ß folds to "ss" (so [ẞ] matches [SS]) and
+  // the Latin ligatures fold to their letter expansions.
+  return label
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/ß/g, 'ss')
+    .replace(/ﬀ/g, 'ff')
+    .replace(/ﬁ/g, 'fi')
+    .replace(/ﬂ/g, 'fl')
+    .replace(/ﬃ/g, 'ffi')
+    .replace(/ﬄ/g, 'ffl')
+    .replace(/ﬅ/g, 'st')
+    .replace(/ﬆ/g, 'st');
 }
 
 // Try to read a link reference definition starting at lines[i]. Definitions
@@ -1298,9 +1315,9 @@ function parseLinkTarget(text, i) {
     if (!ok) return null;
     href = unescapeStr(text.slice(j + 1, k));
     j = k + 1;
-  } else if (text[j] === '"' || text[j] === "'" || text[j] === '(') {
-    href = '';
   } else {
+    // Bare destination: scanned with paren balancing even when it starts
+    // with a quote or paren — ("title") is a destination, not a title.
     let k = j;
     let depth = 0;
     while (k < n) {
@@ -1602,6 +1619,7 @@ function renderInline(text, state) {
         end = t.end;
       }
     }
+    let sawRefLabel = false;
     if (end < 0 && text[after] === '[') {
       let k = after + 1;
       let refEnd = -1;
@@ -1619,6 +1637,9 @@ function renderInline(text, state) {
         k++;
       }
       if (refEnd >= 0) {
+        // A complete second label was present: if it does not resolve, the
+        // whole link fails — there is no shortcut-reference fallback.
+        sawRefLabel = true;
         const refRaw = text.slice(after + 1, refEnd);
         const label = refRaw === '' ? contentRaw : refRaw;
         const def = state.defs.get(normalizeLabel(label));
@@ -1629,7 +1650,7 @@ function renderInline(text, state) {
         }
       }
     }
-    if (end < 0) {
+    if (end < 0 && !sawRefLabel) {
       const def = state.defs.get(normalizeLabel(contentRaw));
       if (def) {
         href = def.href;
