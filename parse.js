@@ -2019,7 +2019,7 @@ function renderInline(text, state) {
       continue;
     }
 
-    if (atBoundary()) {
+    if (atBoundary() && brackets.length === 0) {
       let m = null;
       if (c === 'w') m = matchWww(text, i);
       if (!m && (c === 'h' || c === 'H' || c === 'f' || c === 'F')) {
