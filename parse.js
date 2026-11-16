@@ -758,7 +758,7 @@ function findTermLine(lines, i, term) {
   return -1;
 }
 
-function tryHtmlBlock(lines, i, endOfDoc) {
+function tryHtmlBlock(lines, i, endOfDoc, state) {
   const kind = htmlBlockKind(lines, i);
   if (!kind) return null;
   const s = lines[i].s;
@@ -794,7 +794,9 @@ function tryHtmlBlock(lines, i, endOfDoc) {
   }
   // Ends at the first blank line (not included). The block's text gains a
   // trailing newline only when the block effectively ends the document
-  // (nothing but blank lines follows it).
+  // (nothing but blank lines follows it) AND the source itself ended with
+  // a newline — a document whose last line is unterminated keeps the
+  // block unterminated too.
   let j = i;
   while (j < lines.length && !isBlank(lines[j].s)) j++;
   const text = lines.slice(i, j).map((x) => x.s).join('\n');
@@ -806,7 +808,14 @@ function tryHtmlBlock(lines, i, endOfDoc) {
     }
   }
   return {
-    node: { type: 'html', text: text + (endOfDoc && !hasMore ? '\n' : '') },
+    node: {
+      type: 'html',
+      text:
+        text +
+        (endOfDoc && !hasMore && state && state.srcEndsWithNewline
+          ? '\n'
+          : ''),
+    },
     next: j,
   };
 }
@@ -1246,7 +1255,7 @@ function lexBlocks(lines, state, endOfDoc, sep) {
       i = r.next;
       continue;
     }
-    if ((r = tryHtmlBlock(lines, i, endOfDoc))) {
+    if ((r = tryHtmlBlock(lines, i, endOfDoc, state))) {
       push(r.node);
       i = r.next;
       continue;
@@ -2079,7 +2088,7 @@ function renderTable(b, state) {
 export function parse(src) {
   if (typeof src !== 'string') src = src == null ? '' : String(src);
   src = src.replace(/\r\n|\r/g, '\n').replace(/\0/g, '\ufffd');
-  const state = { defs: new Map() };
+  const state = { defs: new Map(), srcEndsWithNewline: src.endsWith('\n') };
   const rawLines = src.split('\n');
   if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
   const lines = rawLines.map((s) => ({ s, lz: false }));
