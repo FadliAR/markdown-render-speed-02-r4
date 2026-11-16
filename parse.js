@@ -901,8 +901,26 @@ function lexList(lines, i, state, endOfDoc) {
       const L = lines[j];
       const ls = L.s;
       if (isBlank(ls)) {
-        // An item with no content yet is not held open by a blank line.
+        // An item with no content yet is not held open by a blank line —
+        // unless the next non-blank line is another item of this list, in
+        // which case only the empty item ends and the list turns loose.
         if (itemLines.every((x) => isBlank(x.s))) {
+          let k = j;
+          while (k < lines.length && isBlank(lines[k].s)) k++;
+          const nm0 = k < lines.length ? matchMarker(lines[k].s) : null;
+          if (
+            nm0 &&
+            sameListType(first, nm0) &&
+            leadCols(lines[k].s).cols < mk.contentCol
+          ) {
+            while (j < k) {
+              itemLines.push({ s: '', lz: false });
+              j++;
+            }
+            blankBetween = true;
+            itemDone = true;
+            break;
+          }
           itemDone = true;
           listDone = true;
           break;
@@ -1214,6 +1232,10 @@ function lexBlocks(lines, state, endOfDoc, sep) {
       continue;
     }
     if ((r = tryDef(lines, i, state))) {
+      // A definition-only paragraph is still a block element: a blank line
+      // before it separates it from the previous block (list looseness).
+      if (sep && pendingBlank && blocks.length > 0) sep.separated = true;
+      pendingBlank = false;
       if (r.para !== undefined) {
         const sub = [{ s: r.para, lz: false }];
         for (let k = r.paraLine + 1; k < lines.length; k++) sub.push(lines[k]);
