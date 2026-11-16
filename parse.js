@@ -153,6 +153,12 @@ function sliceCols(s, target) {
       break;
     }
   }
+  if (idx < s.length && s[idx] === '\t') {
+    // A tab right at the cut boundary: if its width at its original
+    // column differs from a fresh tab's width, express it as spaces.
+    const w = 4 - (cols % 4);
+    if (w !== 4) return ' '.repeat(w) + s.slice(idx + 1);
+  }
   return s.slice(idx);
 }
 
@@ -782,19 +788,26 @@ function lexBlockquote(lines, i, state) {
   const inner = [];
   let j = i;
   let lazyOk = false;
+  let fence = null;
   while (j < lines.length) {
     const L = lines[j];
     const q = L.lz ? null : matchQuote(L.s);
     if (q !== null) {
       inner.push({ s: q, lz: false });
       j++;
-      lazyOk = endsInParagraph(inner);
+      if (fence) {
+        if (isFenceClose(q, fence)) fence = null;
+      } else {
+        fence = tryFenceStart(q);
+      }
+      lazyOk = fence ? false : endsInParagraph(inner);
       continue;
     }
     if (isBlank(L.s)) {
       let k = j;
       while (k < lines.length && isBlank(lines[k].s)) k++;
-      if (k < lines.length && matchQuote(lines[k].s) !== null) {
+      const qc = k < lines.length ? matchQuote(lines[k].s) : null;
+      if (qc !== null && !tryFenceStart(qc)) {
         while (j < k) {
           inner.push({ s: '', lz: false });
           j++;
@@ -866,13 +879,18 @@ function lexList(lines, i, state) {
         break;
       }
       if (inFence) {
-        itemLines.push({ s: ls, lz: false });
+        const sliced =
+          leadCols(ls).cols >= mk.contentCol ? sliceCols(ls, mk.contentCol) : ls;
+        itemLines.push({ s: sliced, lz: false });
         if (isFenceClose(ls, inFence)) inFence = null;
         j++;
         continue;
       }
       const lc = leadCols(ls).cols;
-      if (lc >= mk.contentCol) {
+      if (
+        lc >= mk.contentCol ||
+        (lc >= 2 && endsInParagraph(itemLines) && !startsBlockLine(ls))
+      ) {
         const sliced = sliceCols(ls, mk.contentCol);
         itemLines.push({ s: sliced, lz: false });
         const f = tryFenceStart(sliced);
@@ -891,7 +909,7 @@ function lexList(lines, i, state) {
         j++;
         continue;
       }
-      if (endsInParagraph(itemLines)) {
+      if (endsInParagraph(itemLines) && !startsBlockLine(ls)) {
         itemLines.push({ s: ls, lz: true });
         j++;
         continue;
@@ -1420,7 +1438,7 @@ function renderInline(text, state) {
       }
       const op = delims[openerIdx];
       let use;
-      if (op.ch === '~') use = 2;
+      if (op.ch === '~') use = op.node.len >= 2 && closer.node.len >= 2 ? 2 : 1;
       else use = op.node.len >= 2 && closer.node.len >= 2 ? 2 : 1;
       if (op.node.len < use || closer.node.len < use) {
         closerIdx++;
@@ -1513,11 +1531,6 @@ function renderInline(text, state) {
     if (br.img) {
       nodes.push({ k: 'img', href, title, kids });
     } else {
-      // A link cannot contain another link: autolinks that were formed
-      // inside the label are flattened back to their display text.
-      for (let k = 0; k < kids.length; k++) {
-        if (kids[k].k === 'link') kids[k] = { k: 'text', s: plainText(kids[k].kids) };
-      }
       nodes.push({ k: 'link', href, title, kids });
       for (const b of brackets) if (!b.img) b.active = false;
     }
@@ -1696,9 +1709,9 @@ function renderInline(text, state) {
     if (c === '*' || c === '_' || c === '~') {
       let run = 1;
       while (text[i + run] === c) run++;
-      if (c === '~' && run < 2) {
-        buf += '~';
-        i++;
+      if (c === '~' && run > 2) {
+        buf += text.slice(i, i + run);
+        i += run;
         continue;
       }
       const prev = i === 0 ? undefined : text[i - 1];
@@ -1823,21 +1836,20 @@ function renderList(b, state) {
     '<' + tag + (b.ordered && b.start !== 1 ? ' start="' + b.start + '"' : '') + '>\n';
   for (const item of b.items) {
     out += '<li>';
-    if (item.task) {
-      out +=
-        '<input ' +
+    const inputHtml = item.task
+      ? '<input ' +
         (item.checked ? 'checked="" ' : '') +
-        'disabled="" type="checkbox"> ';
-    }
+        'disabled="" type="checkbox"> '
+      : '';
     const parts = item.blocks.map((bl) => renderBlock(bl, state, !b.loose));
-    let inner = '';
-    parts.forEach((p, idx) => {
-      inner += p;
-      if (!b.loose && item.blocks[idx].type === 'paragraph' && idx < parts.length - 1) {
-        inner += '\n';
-      }
-    });
-    out += inner;
+    if (item.task && b.loose && item.blocks.length > 0 && item.blocks[0].type === 'paragraph') {
+      // In a loose list the checkbox lives inside the first paragraph.
+      parts[0] =
+        '<p>' + inputHtml + renderInline(item.blocks[0].text, state) + '</p>\n';
+      out += parts.join('');
+    } else {
+      out += inputHtml + parts.join('');
+    }
     out += '</li>\n';
   }
   return out + '</' + tag + '>\n';
