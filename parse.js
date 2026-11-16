@@ -988,8 +988,15 @@ function lexList(lines, i, state, endOfDoc) {
           break;
         }
         if (inFence || leadCols(lines[k].s).cols >= mk.contentCol || tryFenceStart(lines[k].s)) {
-          while (j < k) {
-            itemLines.push({ s: '', lz: false });
+          // Inside a fence in an item, a blank run that runs straight
+          // into the fence close loses one blank line (cm-318).
+          const runLen = k - j;
+          const keep =
+            inFence && k < lines.length && isFenceClose(lines[k].s, inFence)
+              ? runLen - 1
+              : runLen;
+          for (let n = 0; n < runLen; n++) {
+            if (n < keep) itemLines.push({ s: '', lz: false });
             j++;
           }
           continue;
